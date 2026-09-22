@@ -1,0 +1,7 @@
+- insert:
+    - id: dsh-wsl-terraform
+      name: dsh-wsl-terraform
+      config:
+        enabled: true
+        timeoutMs: 180000
+        allowRoots: []
