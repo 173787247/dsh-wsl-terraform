@@ -1,4 +1,4 @@
-import { tfStatus, tfVersion, tfPlanSummary, tfStateList } from "./lib/tf.js";
+import { tfStatus, tfVersion, tfPlanSummary, tfStateList, tfValidateProbe } from "./lib/tf.js";
 
 export const name = "dsh-wsl-terraform";
 export const inject = ["tools", "systemPrompt"];
@@ -15,30 +15,56 @@ export function apply(ctx, config = {}) {
   ctx.systemPrompt.section({
     name: "tool:terraform",
     order: 135,
-    text: "dsh-wsl-terraform runs terraform/tofu plan summaries and state list only. Never apply/destroy. Prefer tf_plan_summary over dumping full plans. Set allowRoots for safety.",
+    text: "dsh-wsl-terraform runs terraform/tofu validate/plan summaries and state list only. Never apply/destroy. Prefer tf_validate_probe then tf_plan_summary. Set allowRoots for safety.",
   });
 
   ctx.tools.register({
     name: "tf_status",
-    description: "Whether terraform or tofu is on PATH.",
+    description: "Whether terraform or tofu is on PATH; preferred binary + version.",
     parameters: { type: "object", additionalProperties: false, properties: {} },
-    output: { schema: { type: "object", additionalProperties: true }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v) }] },
+    output: { schema: { type: "object", additionalProperties: true }, render: (_a, v) => [{ type: "text", text: JSON.stringify(v, null, 2) }] },
     timeoutMs: 10_000,
     isConcurrencySafe: () => true,
     async execute() {
       try {
         const st = await tfStatus();
-        if (st.terraform || st.tofu) {
+        if (st.preferredBin) {
           const ver = await tfVersion({ timeoutMs: 10_000 });
-          return { ...st, version: ver.output };
+          return { ...st, version: ver.output, allowRootsCount: allowRoots.length };
         }
-        return st;
+        return { ...st, allowRootsCount: allowRoots.length };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
     presentCall: () => ({ card: "generic", title: "tf status" }),
     presentResult: (_a, r) => ({ card: "generic", title: "tf status", content: r.content }),
+  });
+
+  ctx.tools.register({
+    name: "tf_validate_probe",
+    description: "terraform/tofu validate -no-color (read-only dry probe). Never applies.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      required: ["dir"],
+      properties: { dir: { type: "string", description: "Terraform working directory" } },
+    },
+    output: {
+      schema: { type: "object", additionalProperties: true },
+      render: (_a, v) => [{ type: "text", text: v.ok === false && v.error ? v.error : v.output || JSON.stringify(v) }],
+    },
+    timeoutMs: Math.min(timeoutMs, 60_000),
+    isConcurrencySafe: () => true,
+    async execute(args) {
+      try {
+        return await tfValidateProbe({ dir: args.dir, allowRoots, timeoutMs: Math.min(timeoutMs, 60_000) });
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    presentCall: () => ({ card: "generic", title: "tf validate" }),
+    presentResult: (_a, r) => ({ card: "generic", title: "tf validate", content: r.content }),
   });
 
   ctx.tools.register({
@@ -83,35 +109,60 @@ export function apply(ctx, config = {}) {
     presentResult: (_a, r) => ({ card: "generic", title: "tf plan", content: r.content }),
   });
 
+  async function executeStateList(args) {
+    return tfStateList({ dir: args.dir, allowRoots, timeoutMs: Math.min(timeoutMs, 60_000) });
+  }
+
+  const stateListParams = {
+    type: "object",
+    additionalProperties: false,
+    required: ["dir"],
+    properties: { dir: { type: "string" } },
+  };
+  const stateListOutput = {
+    schema: { type: "object", additionalProperties: true },
+    render: (_a, v) => [
+      {
+        type: "text",
+        text: v.ok === false ? v.error : `count=${v.count}\n${(v.resources || []).join("\n")}`,
+      },
+    ],
+  };
+
   ctx.tools.register({
     name: "tf_state_list",
     description: "terraform/tofu state list (read-only resource addresses).",
-    parameters: {
-      type: "object",
-      additionalProperties: false,
-      required: ["dir"],
-      properties: { dir: { type: "string" } },
-    },
-    output: {
-      schema: { type: "object", additionalProperties: true },
-      render: (_a, v) => [
-        {
-          type: "text",
-          text: v.ok === false ? v.error : `count=${v.count}\n${(v.resources || []).join("\n")}`,
-        },
-      ],
-    },
+    parameters: stateListParams,
+    output: stateListOutput,
     timeoutMs: Math.min(timeoutMs, 60_000),
     isConcurrencySafe: () => true,
     async execute(args) {
       try {
-        return await tfStateList({ dir: args.dir, allowRoots, timeoutMs: Math.min(timeoutMs, 60_000) });
+        return await executeStateList(args);
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
     presentCall: () => ({ card: "generic", title: "tf state list" }),
     presentResult: (_a, r) => ({ card: "generic", title: "tf state list", content: r.content }),
+  });
+
+  ctx.tools.register({
+    name: "terraform_state_list",
+    description: "Alias of tf_state_list (read-only).",
+    parameters: stateListParams,
+    output: stateListOutput,
+    timeoutMs: Math.min(timeoutMs, 60_000),
+    isConcurrencySafe: () => true,
+    async execute(args) {
+      try {
+        return await executeStateList(args);
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    presentCall: () => ({ card: "generic", title: "terraform state list" }),
+    presentResult: (_a, r) => ({ card: "generic", title: "terraform state list", content: r.content }),
   });
 }
 
